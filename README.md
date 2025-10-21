@@ -8,7 +8,7 @@ Run multiple LLM models concurrently on a single GPU using Ray Serve and KubeRay
 
 ```bash
 helm repo add kuberay https://ray-project.github.io/kuberay-helm/
-helm install kuberay-operator kuberay/kuberay-operator --version 1.1.0
+helm install kuberay-operator kuberay/kuberay-operator --version 1.4.0
 ```
 
 ### 2. Deploy LLM Engine

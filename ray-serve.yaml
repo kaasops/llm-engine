@@ -75,7 +75,7 @@ spec:
         import_path: engine:app
         route_prefix: /
         runtime_env:
-          working_dir: "https://github.com/dkhachyan/ray-llm-study/archive/refs/heads/master.zip"
+          working_dir: "https://github.com/kaasops/llm-engine/archive/refs/heads/master.zip"
           env_vars:
             MODELS: "Qwen/Qwen2.5-7B-Instruct,unsloth/Meta-Llama-3.1-8B-Instruct"
             VLLM_USE_V1: "1"

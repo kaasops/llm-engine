@@ -35,9 +35,11 @@ curl "http://<service-ip>:8000/v1/models"
 ## What It Does
 
 - **Multiple Models**: Run several LLMs on one GPU simultaneously
-- **GPU Efficiency**: Uses vLLM sleep mode to share GPU memory
+- **GPU Efficiency**: Uses [vLLM sleep mode](https://docs.vllm.ai/en/latest/models/sleep_mode.html) to share GPU memory
 - **OpenAI Compatible**: Works with any OpenAI-compatible client
 - **Auto-scaling**: Automatically scales based on load
+
+**Important**: Ensure you have enough free RAM to offload all LLMs when using sleep mode.
 
 ## Configuration
 

@@ -10,7 +10,15 @@ working_dir: https://github.com/kaasops/llm-engine/archive/refs/heads/master.zip
 import_path: engine:app
 hf_token: ''
 
-extraApplications: []
+extraApplications:
+  # - import_path: ray.serve.llm:build_openai_app
+  #   name: buildin_vllm_engine
+  #   route_prefix: /
+  #   args:
+  #     llm_configs:
+  #       - model_loading_config:
+  #           model_id: "qwen-0.5b"
+  #           model_source: "Qwen/Qwen2.5-0.5B-Instruct"
 
 headGroupSpec:
   rayStartParams:

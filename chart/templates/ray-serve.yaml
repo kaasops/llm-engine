@@ -60,4 +60,7 @@ spec:
             ray_actor_options:
               num_cpus: 4.0
               num_gpus: 1.0
+      {{- with .Values.extraApplications }}
+      {{ toYaml . | nindent 6 }}
+      {{- end }}
 ---

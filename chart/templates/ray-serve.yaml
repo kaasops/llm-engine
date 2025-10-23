@@ -52,7 +52,7 @@ spec:
         runtime_env:
           working_dir: {{ .Values.working_dir }}
           env_vars:
-            MODELS: {{- include "llm-engine.modelsString" . }}
+            MODELS: {{ include "llm-engine.modelsString" . }}
             VLLM_USE_V1: "1"
             HF_TOKEN: {{ .Values.hf_token }}
         deployments:

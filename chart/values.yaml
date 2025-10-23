@@ -1,6 +1,7 @@
 kuberay-operator:
  enabled: false
 
+name: llm-engine
 rayVersion: 2.49.2
 image: "rayproject/ray-llm:{{ .Values.rayVersion }}-py311-cu128"
 models:
@@ -47,3 +48,16 @@ workerGroupSpec:
       cpu: "8"
       memory: "32Gi"
       nvidia.com/gpu: 1
+
+ingress:
+  enabled: false
+  host: "llm-engine.local"
+  # ingressClassName: "nginx"  # Uncomment and set if using specific ingress controller
+  # tls:
+  #   - hosts:
+  #       - "llm-engine.example.com"
+  #     secretName: llm-engine-tls
+  # annotations:
+  #   kubernetes.io/ingress.class: "nginx"
+  #   nginx.ingress.kubernetes.io/rewrite-target: /
+  #   nginx.ingress.kubernetes.io/ssl-redirect: "false"

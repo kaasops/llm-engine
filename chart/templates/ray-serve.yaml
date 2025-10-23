@@ -1,7 +1,7 @@
 apiVersion: ray.io/v1
 kind: RayService
 metadata:
-  name: llm-engine
+  name: {{ .Values.name }}
 spec:
   rayClusterConfig:
     rayVersion: {{ .Values.rayVersion }}
@@ -54,7 +54,7 @@ spec:
           env_vars:
             MODELS: {{ include "llm-engine.modelsString" . }}
             VLLM_USE_V1: "1"
-            HF_TOKEN: {{ .Values.hf_token }}
+            HF_TOKEN: {{ .Values.hf_token | quote }}
         deployments:
           - name: LLMServingAPI
             ray_actor_options:

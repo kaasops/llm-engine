@@ -1,0 +1,42 @@
+kuberay-operator:
+ enabled: false
+
+rayVersion: 2.49.2
+image: "rayproject/ray-llm:{{ .Values.rayVersion }}-py311-cu128"
+models:
+  - "Qwen/Qwen2.5-7B-Instruct"
+  - "unsloth/Meta-Llama-3.1-8B-Instruct"
+working_dir: https://github.com/kaasops/llm-engine/archive/refs/heads/master.zip
+import_path: engine:app
+hf_token: ''
+
+extraApplications: []
+
+headGroupSpec:
+  rayStartParams:
+    num-cpus: "1"
+    num-gpus: "0"
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+
+workerGroupSpec:
+  replicas: 1
+  minReplicas: 1
+  maxReplicas: 2
+  rayStartParams:
+    num-cpus: "8"
+    num-gpus: "1"
+  resources:
+    limits:
+      cpu: "8"
+      memory: "64Gi"
+      nvidia.com/gpu: 1
+    requests:
+      cpu: "8"
+      memory: "32Gi"
+      nvidia.com/gpu: 1

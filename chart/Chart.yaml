@@ -1,0 +1,12 @@
+apiVersion: v2
+name: llm-engine
+description: A Helm chart for deploying LLM Engine with multiple models using Ray Serve
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: kuberay-operator
+    version: "1.4.0"
+    repository: "https://ray-project.github.io/kuberay-helm/"
+    condition: kuberay-operator.enabled

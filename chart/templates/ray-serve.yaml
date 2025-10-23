@@ -1,0 +1,63 @@
+apiVersion: ray.io/v1
+kind: RayService
+metadata:
+  name: llm-engine
+spec:
+  rayClusterConfig:
+    rayVersion: {{ .Values.rayVersion }}
+    enableInTreeAutoscaling: true
+    autoscalerOptions:
+      version: v2
+      upscalingMode: Default
+      idleTimeoutSeconds: 60
+      imagePullPolicy: IfNotPresent
+    headGroupSpec:
+      rayStartParams:
+        {{- toYaml .Values.headGroupSpec.rayStartParams | nindent 8 }}
+      template:
+        spec:
+          containers:
+          - name: ray-head
+            image: {{ tpl .Values.image . }}
+            ports:
+            - containerPort: 6379
+              name: gcs
+            - containerPort: 8265
+              name: dashboard
+            - containerPort: 10001
+              name: client
+            - containerPort: 8000
+              name: serving
+            resources:
+              {{- toYaml .Values.headGroupSpec.resources | nindent 14 }}
+    workerGroupSpecs:
+    - replicas: {{ .Values.workerGroupSpec.replicas }}
+      minReplicas: {{ .Values.workerGroupSpec.minReplicas }}
+      maxReplicas: {{ .Values.workerGroupSpec.maxReplicas }}
+      groupName: gpu-worker
+      rayStartParams:
+        {{- toYaml .Values.workerGroupSpec.rayStartParams | nindent 8 }}
+      template:
+        spec:
+          containers:
+          - name: ray-worker
+            image: {{  tpl .Values.image . }}
+            resources:
+              {{- toYaml .Values.workerGroupSpec.resources | nindent 14 }}
+  serveConfigV2: |
+    applications:
+      - name: vLLM_engine
+        import_path: {{ .Values.import_path }}
+        route_prefix: /
+        runtime_env:
+          working_dir: {{ .Values.working_dir }}
+          env_vars:
+            MODELS: {{- include "llm-engine.modelsString" . }}
+            VLLM_USE_V1: "1"
+            HF_TOKEN: {{ .Values.hf_token }}
+        deployments:
+          - name: LLMServingAPI
+            ray_actor_options:
+              num_cpus: 4.0
+              num_gpus: 1.0
+---

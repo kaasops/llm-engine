@@ -10,7 +10,7 @@ working_dir: https://github.com/kaasops/llm-engine/archive/refs/heads/master.zip
 import_path: engine:app
 hf_token: ''
 
-extraApplications:
+extraApplications: []
   # - import_path: ray.serve.llm:build_openai_app
   #   name: buildin_vllm_engine
   #   route_prefix: /
@@ -26,12 +26,11 @@ headGroupSpec:
     num-gpus: "0"
   resources:
     limits:
-      cpu: "500m"
-      memory: "512Mi"
+      cpu: "2"
+      memory: "8Gi"
     requests:
-      cpu: "500m"
-      memory: "512Mi"
-
+      cpu: "1"
+      memory: "4Gi"
 workerGroupSpec:
   replicas: 1
   minReplicas: 1

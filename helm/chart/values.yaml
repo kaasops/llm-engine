@@ -10,6 +10,9 @@ models:
 working_dir: https://github.com/kaasops/llm-engine/archive/refs/heads/master.zip
 import_path: engine:app
 hf_token: ''
+ray_actor_options:
+  num_cpus: 4.0
+  num_gpus: 1.0
 
 extraApplications: []
   # - import_path: ray.serve.llm:build_openai_app

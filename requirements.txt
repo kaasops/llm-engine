@@ -1,0 +1,4 @@
+vllm==0.11.0
+ray==2.49.2
+fastapi==0.120.0
+ray[serve]

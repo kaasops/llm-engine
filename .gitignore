@@ -2,3 +2,4 @@
 Chart.lock
 .vscode/
 .venv/
+*.pyc

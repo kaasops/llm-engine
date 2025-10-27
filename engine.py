@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 import time
 import os
 import asyncio
+from s3_model_loader import S3ModelLoader
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -72,19 +73,36 @@ class ModelManager:
         self.model_name = model_name
         self.model = None
         self.sampling_params = None
+        self.s3_loader = None
+        self.local_model_path = None
         self._initialize_model()
     
     def _initialize_model(self):
         """Initialize the model with sleep mode enabled"""
         try:
             logger.info(f"Initializing model: {self.model_name}")
-            self.model = LLM(self.model_name, enable_sleep_mode=True)
+            
+            # Check if model is from S3
+            if self.model_name.startswith("s3://"):
+                logger.info(f"Detected S3 model: {self.model_name}")
+                self.s3_loader = S3ModelLoader()
+                self.local_model_path = self.s3_loader.download_model_from_s3(self.model_name)
+                # Use the local path for vLLM
+                actual_model_path = self.local_model_path
+            else:
+                # Use HuggingFace model directly
+                actual_model_path = self.model_name
+            
+            self.model = LLM(actual_model_path, enable_sleep_mode=True)
             self.sampling_params = SamplingParams(**ModelConfig.DEFAULT_SAMPLING_PARAMS)
             self.model.reset_prefix_cache()
             self.model.sleep(level=1)
             logger.info(f"Model {self.model_name} initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize model {self.model_name}: {str(e)}")
+            # Clean up S3 loader if it was created
+            if self.s3_loader:
+                self.s3_loader.cleanup()
             raise
     
     
@@ -151,6 +169,11 @@ class ModelManager:
         # Add the final assistant prompt
         prompt += "Assistant:"
         return prompt
+    
+    def cleanup(self):
+        """Clean up S3 model resources if applicable"""
+        if self.s3_loader:
+            self.s3_loader.cleanup()
 
 # FastAPI application
 api = FastAPI(

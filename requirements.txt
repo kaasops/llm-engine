@@ -3,3 +3,4 @@ ray==2.49.2
 fastapi==0.115.12
 ray[serve]==2.49.2
 pydantic==2.10.0
+boto3==1.34.0

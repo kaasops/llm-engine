@@ -92,4 +92,27 @@ kubectl port-forward service/llm-engine-head-svc 8265:8265
 - **Model not loading**: Check model names and HF_TOKEN
 - **Connection issues**: Verify service IP and ports
 
-That's it! You now have multiple LLMs running on one GPU.
+## Development
+
+### Local Setup
+
+1. Create and activate a virtual environment:
+
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+2. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Running on Remote Ray Cluster
+
+To run the LLM Engine on a remote Ray cluster for development:
+
+```bash
+serve run --address ray://127.0.0.1:10001 --runtime-env-json='{"env_vars": {"MODELS": "Qwen/Qwen2.5-7B-Instruct"}, "working_dir": "./"}' engine:app
+```

@@ -55,6 +55,11 @@ spec:
             MODELS: {{ include "llm-engine.modelsString" . }}
             VLLM_USE_V1: "1"
             HF_TOKEN: {{ .Values.hf_token | quote }}
+            {{- if .Values.extraEnvVars }}
+            {{- range $key, $value := .Values.extraEnvVars }}
+            {{ $key }}: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
         deployments:
           - name: LLMServingAPI
             ray_actor_options:

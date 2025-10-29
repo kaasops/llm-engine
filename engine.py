@@ -98,6 +98,8 @@ class ModelManager:
             self.model.reset_prefix_cache()
             self.model.sleep(level=1)
             logger.info(f"Model {self.model_name} initialized successfully")
+            if self.s3_loader:
+                self.s3_loader.cleanup()
         except Exception as e:
             logger.error(f"Failed to initialize model {self.model_name}: {str(e)}")
             # Clean up S3 loader if it was created

@@ -3,7 +3,23 @@ entries:
   llm-engine:
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-10-28T20:17:47.123468+02:00"
+    created: "2025-10-29T16:52:01.883977445+02:00"
+    dependencies:
+    - condition: kuberay-operator.enabled
+      name: kuberay-operator
+      repository: https://ray-project.github.io/kuberay-helm/
+      version: 1.4.0
+    description: A Helm chart for deploying LLM Engine with multiple models using
+      Ray Serve
+    digest: 93892c23477fb7f710b79f23bdb148132bb30e9f3ba86ecbae7a44535678ffc4
+    name: llm-engine
+    type: application
+    urls:
+    - https://kaasops.github.io/llm-engine/helm/packages/llm-engine-0.1.3.tgz
+    version: 0.1.3
+  - apiVersion: v2
+    appVersion: 1.0.0
+    created: "2025-10-29T16:52:01.87984783+02:00"
     dependencies:
     - condition: kuberay-operator.enabled
       name: kuberay-operator
@@ -19,7 +35,7 @@ entries:
     version: 0.1.2
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-10-28T20:17:47.119955+02:00"
+    created: "2025-10-29T16:52:01.875529081+02:00"
     dependencies:
     - condition: kuberay-operator.enabled
       name: kuberay-operator
@@ -35,7 +51,7 @@ entries:
     version: 0.1.1
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-10-28T20:17:47.116307+02:00"
+    created: "2025-10-29T16:52:01.870187558+02:00"
     dependencies:
     - condition: kuberay-operator.enabled
       name: kuberay-operator
@@ -49,4 +65,4 @@ entries:
     urls:
     - https://kaasops.github.io/llm-engine/helm/packages/llm-engine-0.1.0.tgz
     version: 0.1.0
-generated: "2025-10-28T20:17:47.111598+02:00"
+generated: "2025-10-29T16:52:01.864219593+02:00"

@@ -8,6 +8,8 @@ import time
 import os
 import asyncio
 from s3_model_loader import S3ModelLoader
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.v1.engine.async_llm import AsyncLLM
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -68,17 +70,18 @@ class ModelConfig:
 
 class ModelManager:
     """Manages vLLM model lifecycle and operations"""
-    
-    def __init__(self, model_name: str):
-        self.model_name = model_name
+    def __init__(self):
+        self.model_name = None
         self.model = None
         self.sampling_params = None
         self.s3_loader = None
         self.local_model_path = None
-        self._initialize_model()
-    
-    def _initialize_model(self):
+        
+    @classmethod
+    async def _initialize_model(cls, model_name: str):
         """Initialize the model with sleep mode enabled"""
+        self = cls()
+        self.model_name = model_name
         try:
             logger.info(f"Initializing model: {self.model_name}")
             
@@ -92,14 +95,20 @@ class ModelManager:
             else:
                 # Use HuggingFace model directly
                 actual_model_path = self.model_name
-            
-            self.model = LLM(actual_model_path, enable_sleep_mode=True)
+
+            engine_args = AsyncEngineArgs(
+                model=actual_model_path,
+                enforce_eager=True,
+                enable_sleep_mode=True,
+            )
+            self.model = AsyncLLM.from_engine_args(engine_args)
             self.sampling_params = SamplingParams(**ModelConfig.DEFAULT_SAMPLING_PARAMS)
-            self.model.reset_prefix_cache()
-            self.model.sleep(level=1)
+            await self.model.reset_prefix_cache()
+            await self.model.sleep(level=1)
             logger.info(f"Model {self.model_name} initialized successfully")
             if self.s3_loader:
                 self.s3_loader.cleanup()
+            return self
         except Exception as e:
             logger.error(f"Failed to initialize model {self.model_name}: {str(e)}")
             # Clean up S3 loader if it was created
@@ -107,8 +116,7 @@ class ModelManager:
                 self.s3_loader.cleanup()
             raise
     
-    
-    def generate_chat_completion(self, messages: list[ChatMessage], custom_params: Optional[Dict[str, Any]] = None) -> str:
+    async def generate_chat_completion(self, messages: list[ChatMessage], custom_params: Optional[Dict[str, Any]] = None) -> str:
         """Generate chat completion with proper error handling and timing"""
         # Convert messages to prompt format
         prompt = self._format_messages_to_prompt(messages)
@@ -123,7 +131,7 @@ class ModelManager:
             sampling_params = self.sampling_params
             if custom_params:
                 sampling_params = SamplingParams(**custom_params)
-            
+
             # Generate text
             outputs = self.model.generate(prompt, sampling_params)
             
@@ -157,7 +165,7 @@ class ModelManager:
         except Exception as e:
             logger.error(f"Failed to put model {self.model_name} to sleep after response: {str(e)}")
     
-    def _format_messages_to_prompt(self, messages: list[ChatMessage]) -> str:
+    async def _format_messages_to_prompt(self, messages: list[ChatMessage]) -> str:
         """Convert chat messages to a prompt string"""
         prompt = ""
         for message in messages:
@@ -172,7 +180,7 @@ class ModelManager:
         prompt += "Assistant:"
         return prompt
     
-    def cleanup(self):
+    async def cleanup(self):
         """Clean up S3 model resources if applicable"""
         if self.s3_loader:
             self.s3_loader.cleanup()
@@ -184,25 +192,26 @@ api = FastAPI(
     version="1.0.0"
 )
 
-@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0})
+@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0}, user_config={"model": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775/"})
 @serve.ingress(api)
 class LLMServingAPI:
     """Main API class for serving multiple LLM models"""
     
     def __init__(self):
         # Get models from environment variable
-        self.models = ModelConfig.get_models_from_env()
-        
-        # Create model managers for each model
+        self.models = ModelConfig.get_models_from_env()        
         self.model_managers = {}
+    
+    async def reconfigure(self, config: dict):
+        # Create model managers for each model
         for model_name in self.models:
             try:
-                self.model_managers[model_name] = ModelManager(model_name)
+                self.model_managers[model_name] = await ModelManager._initialize_model(model_name)
                 logger.info(f"Successfully initialized model: {model_name}")
             except Exception as e:
                 logger.error(f"Failed to initialize model {model_name}: {str(e)}")
                 raise
-        
+
         logger.info(f"LLM Serving API initialized with models: {list(self.model_managers.keys())}")
     
     @api.get("/health")
@@ -230,7 +239,7 @@ class LLMServingAPI:
             }
             
             # Generate chat completion
-            generated_text, tokens_generated, processing_time = self.model_managers[request.model].generate_chat_completion(
+            generated_text, tokens_generated, processing_time = await self.model_managers[request.model].generate_chat_completion(
                 request.messages, custom_params
             )
             

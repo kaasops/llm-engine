@@ -18,18 +18,23 @@ api = FastAPI(
     version="1.0.0"
 )
 
-@serve.deployment(ray_actor_options={"num_cpus": 4.0, "num_gpus": 1.0})
+@serve.deployment(ray_actor_options={"num_cpus": 4.0, "num_gpus": 1.0}, user_config={"model": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775/"})
 @serve.ingress(api)
 class LLMServingAPI:
     def __init__(self):
         self.prompt = "Hi Who are you?"
+        self.sampling_params = SamplingParams(temperature=0.8, top_p=0.95, output_kind=RequestOutputKind.DELTA)
+        self.engine = None
+
+    async def reconfigure(self, config: dict):
         engine_args = AsyncEngineArgs(
             model="/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775/",
             enforce_eager=True,
             enable_sleep_mode=True,
         )
+        self.model = config["model"]
         self.engine = AsyncLLM.from_engine_args(engine_args)
-        self.sampling_params = SamplingParams(temperature=0.8, top_p=0.95, output_kind=RequestOutputKind.DELTA)
+        await self.engine.sleep(level=1)
 
     async def sleep_model_after_response(self):
         """Put model to sleep after response is sent"""

@@ -195,8 +195,18 @@ class ModelManager:
         # Convert messages to prompt format
         prompt = self._format_messages_to_prompt(messages)
         
-        # Wake up the model
-        await self.model.wake_up()
+        # Only wake up the model if it's sleeping
+        try:
+            # Check if model is in sleep mode before waking up
+            if hasattr(self.model, 'is_sleeping') and self.model.is_sleeping:
+                await self.model.wake_up()
+                logger.info(f"Model {self.model_name} woke up from sleep")
+            else:
+                # Model is already awake, no need to wake up
+                pass
+        except AttributeError:
+            # Fallback for older vLLM versions that don't have is_sleeping attribute
+            await self.model.wake_up()
         
         # Use custom sampling parameters if provided
         sampling_params = self.sampling_params

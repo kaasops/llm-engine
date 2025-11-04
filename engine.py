@@ -12,8 +12,76 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.sampling_params import RequestOutputKind
 from vllm.utils import random_uuid
-from starlette.responses import StreamingResponse, Response
+# Third-party imports
+from starlette.responses import StreamingResponse
+
+# Standard library imports
 import json
+from typing import Any, Dict, Union
+
+# Try to import orjson for better performance, fallback to standard json
+try:
+    import orjson
+    HAS_ORJSON = True
+except ImportError:
+    HAS_ORJSON = False
+
+
+class JSONUtils:
+    """Utility class for JSON operations with enhanced error handling and performance"""
+    
+    @staticmethod
+    def serialize(data: Any, ensure_ascii: bool = False) -> str:
+        """
+        Serialize data to JSON string with error handling
+        
+        Args:
+            data: Data to serialize
+            ensure_ascii: Whether to escape non-ASCII characters
+            
+        Returns:
+            JSON string
+            
+        Raises:
+            TypeError: If data is not JSON serializable
+        """
+        try:
+            # Use orjson for better performance if available
+            if HAS_ORJSON:
+                # orjson returns bytes, so we need to decode
+                return orjson.dumps(data).decode('utf-8')
+            else:
+                return json.dumps(data, ensure_ascii=ensure_ascii)
+        except (TypeError, ValueError) as e:
+            logger.error(f"JSON serialization failed: {str(e)}")
+            raise TypeError(f"Failed to serialize data to JSON: {str(e)}")
+    
+    @staticmethod
+    def deserialize(json_str: str) -> Union[Dict, list, str, int, float, bool, None]:
+        """
+        Deserialize JSON string with error handling
+        
+        Args:
+            json_str: JSON string to deserialize
+            
+        Returns:
+            Deserialized data
+            
+        Raises:
+            json.JSONDecodeError: If JSON string is invalid
+        """
+        try:
+            # Use orjson for better performance if available
+            if HAS_ORJSON:
+                return orjson.loads(json_str)
+            else:
+                return json.loads(json_str)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"JSON deserialization failed: {str(e)}")
+            # Convert orjson error to json.JSONDecodeError for consistency
+            if HAS_ORJSON and isinstance(e, ValueError):
+                raise json.JSONDecodeError(f"Failed to parse JSON: {str(e)}", json_str, 0)
+            raise
 
 
 # Configure logging
@@ -159,7 +227,7 @@ class ModelManager:
                                 }
                             ]
                         }
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                        yield f"data: {JSONUtils.serialize(chunk)}\n\n"
             # Check if generation is finished
             if output.finished:
                 if stream:
@@ -177,7 +245,7 @@ class ModelManager:
                             }
                         ]
                     }
-                    yield f"data: {json.dumps(final_chunk)}\n\n"
+                    yield f"data: {JSONUtils.serialize(final_chunk)}\n\n"
                     yield "data: [DONE]\n\n"
                 break
         

@@ -8,6 +8,81 @@ import time
 import os
 import asyncio
 from s3_model_loader import S3ModelLoader
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.v1.engine.async_llm import AsyncLLM
+from vllm.sampling_params import RequestOutputKind
+from vllm.utils import random_uuid
+# Third-party imports
+from starlette.responses import StreamingResponse
+
+# Standard library imports
+import json
+from typing import Any, Dict, Union
+
+# Try to import orjson for better performance, fallback to standard json
+try:
+    import orjson
+    HAS_ORJSON = True
+except ImportError:
+    HAS_ORJSON = False
+
+
+class JSONUtils:
+    """Utility class for JSON operations with enhanced error handling and performance"""
+    
+    @staticmethod
+    def serialize(data: Any, ensure_ascii: bool = False) -> str:
+        """
+        Serialize data to JSON string with error handling
+        
+        Args:
+            data: Data to serialize
+            ensure_ascii: Whether to escape non-ASCII characters
+            
+        Returns:
+            JSON string
+            
+        Raises:
+            TypeError: If data is not JSON serializable
+        """
+        try:
+            # Use orjson for better performance if available
+            if HAS_ORJSON:
+                # orjson returns bytes, so we need to decode
+                return orjson.dumps(data).decode('utf-8')
+            else:
+                return json.dumps(data, ensure_ascii=ensure_ascii)
+        except (TypeError, ValueError) as e:
+            logger.error(f"JSON serialization failed: {str(e)}")
+            raise TypeError(f"Failed to serialize data to JSON: {str(e)}")
+    
+    @staticmethod
+    def deserialize(json_str: str) -> Union[Dict, list, str, int, float, bool, None]:
+        """
+        Deserialize JSON string with error handling
+        
+        Args:
+            json_str: JSON string to deserialize
+            
+        Returns:
+            Deserialized data
+            
+        Raises:
+            json.JSONDecodeError: If JSON string is invalid
+        """
+        try:
+            # Use orjson for better performance if available
+            if HAS_ORJSON:
+                return orjson.loads(json_str)
+            else:
+                return json.loads(json_str)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"JSON deserialization failed: {str(e)}")
+            # Convert orjson error to json.JSONDecodeError for consistency
+            if HAS_ORJSON and isinstance(e, ValueError):
+                raise json.JSONDecodeError(f"Failed to parse JSON: {str(e)}", json_str, 0)
+            raise
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -49,7 +124,8 @@ class ModelConfig:
     DEFAULT_SAMPLING_PARAMS = {
         "temperature": 0.8,
         "top_p": 0.95,
-        "max_tokens": 512
+        "max_tokens": 512,
+        "output_kind": RequestOutputKind.DELTA
     }
     
     @staticmethod
@@ -68,17 +144,18 @@ class ModelConfig:
 
 class ModelManager:
     """Manages vLLM model lifecycle and operations"""
-    
-    def __init__(self, model_name: str):
-        self.model_name = model_name
+    def __init__(self):
+        self.model_name = None
         self.model = None
         self.sampling_params = None
         self.s3_loader = None
         self.local_model_path = None
-        self._initialize_model()
-    
-    def _initialize_model(self):
+        
+    @classmethod
+    async def _initialize_model(cls, model_name: str):
         """Initialize the model with sleep mode enabled"""
+        self = cls()
+        self.model_name = model_name
         try:
             logger.info(f"Initializing model: {self.model_name}")
             
@@ -92,14 +169,20 @@ class ModelManager:
             else:
                 # Use HuggingFace model directly
                 actual_model_path = self.model_name
-            
-            self.model = LLM(actual_model_path, enable_sleep_mode=True)
+
+            engine_args = AsyncEngineArgs(
+                model=actual_model_path,
+                enforce_eager=True,
+                enable_sleep_mode=True,
+            )
+            self.model = AsyncLLM.from_engine_args(engine_args)
             self.sampling_params = SamplingParams(**ModelConfig.DEFAULT_SAMPLING_PARAMS)
-            self.model.reset_prefix_cache()
-            self.model.sleep(level=1)
+            await self.model.reset_prefix_cache()
+            await self.model.sleep(level=1)
             logger.info(f"Model {self.model_name} initialized successfully")
             if self.s3_loader:
                 self.s3_loader.cleanup()
+            return self
         except Exception as e:
             logger.error(f"Failed to initialize model {self.model_name}: {str(e)}")
             # Clean up S3 loader if it was created
@@ -107,52 +190,74 @@ class ModelManager:
                 self.s3_loader.cleanup()
             raise
     
-    
-    def generate_chat_completion(self, messages: list[ChatMessage], custom_params: Optional[Dict[str, Any]] = None) -> str:
+    async def generate_chat_completion(self, messages: list[ChatMessage], custom_params: Optional[Dict[str, Any]] = None, request_id: str = "", stream: bool = False):
         """Generate chat completion with proper error handling and timing"""
         # Convert messages to prompt format
         prompt = self._format_messages_to_prompt(messages)
         
-        start_time = time.time()
+        # Wake up the model
+        await self.model.wake_up()
         
-        try:
-            # Wake up the model
-            self.model.wake_up()
+        # Use custom sampling parameters if provided
+        sampling_params = self.sampling_params
+        if custom_params:
+            sampling_params = SamplingParams(**custom_params)
+
+        generated_text = ""
+        async for output in self.model.generate(prompt=prompt, sampling_params=sampling_params, request_id=request_id):
+            for completion in output.outputs:
+                # In DELTA mode, we get only new tokens generated since last iteration
+                new_text = completion.text
+                if new_text:
+                    generated_text += new_text
+                    if stream:
+                        # Format as OpenAI streaming response
+                        chunk = {
+                            "id": f"chatcmpl-{request_id}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": self.model_name,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "content": new_text
+                                    },
+                                    "finish_reason": None
+                                }
+                            ]
+                        }
+                        yield f"data: {JSONUtils.serialize(chunk)}\n\n"
+            # Check if generation is finished
+            if output.finished:
+                if stream:
+                    # Send final chunk with finish_reason
+                    final_chunk = {
+                        "id": f"chatcmpl-{request_id}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": self.model_name,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": "stop"
+                            }
+                        ]
+                    }
+                    yield f"data: {JSONUtils.serialize(final_chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+                break
+        
+        if not stream:
+            yield generated_text
             
-            # Use custom sampling parameters if provided
-            sampling_params = self.sampling_params
-            if custom_params:
-                sampling_params = SamplingParams(**custom_params)
-            
-            # Generate text
-            outputs = self.model.generate(prompt, sampling_params)
-            
-            # Get the generated text
-            generated_text = outputs[0].outputs[0].text
-            tokens_generated = len(outputs[0].outputs[0].token_ids)
-            
-            processing_time = time.time() - start_time
-            logger.info(f"Generated {tokens_generated} tokens in {processing_time:.2f}s for model {self.model_name}")
-            
-            # Don't put model to sleep here - it will be done after response is sent
-            return generated_text, tokens_generated, processing_time
-            
-        except Exception as e:
-            logger.error(f"Error during chat completion for model {self.model_name}: {str(e)}")
-            # Ensure model is put back to sleep even if generation fails
-            try:
-                self.model.reset_prefix_cache()
-                self.model.sleep(level=1)
-            except Exception as sleep_error:
-                logger.error(f"Failed to put model to sleep: {str(sleep_error)}")
-            raise
-    
     async def sleep_model_after_response(self):
         """Put model to sleep after response is sent"""
         try:
             await asyncio.sleep(0.1)  # Small delay to ensure response is sent
-            self.model.reset_prefix_cache()
-            self.model.sleep(level=1)
+            await self.model.reset_prefix_cache()
+            await self.model.sleep(level=1)
             logger.info(f"Model {self.model_name} put to sleep after response")
         except Exception as e:
             logger.error(f"Failed to put model {self.model_name} to sleep after response: {str(e)}")
@@ -172,7 +277,7 @@ class ModelManager:
         prompt += "Assistant:"
         return prompt
     
-    def cleanup(self):
+    async def cleanup(self):
         """Clean up S3 model resources if applicable"""
         if self.s3_loader:
             self.s3_loader.cleanup()
@@ -184,25 +289,26 @@ api = FastAPI(
     version="1.0.0"
 )
 
-@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0})
+@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0}, user_config={"model": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775/"})
 @serve.ingress(api)
 class LLMServingAPI:
     """Main API class for serving multiple LLM models"""
     
     def __init__(self):
         # Get models from environment variable
-        self.models = ModelConfig.get_models_from_env()
-        
-        # Create model managers for each model
+        self.models = ModelConfig.get_models_from_env()        
         self.model_managers = {}
+    
+    async def reconfigure(self, config: dict):
+        # Create model managers for each model
         for model_name in self.models:
             try:
-                self.model_managers[model_name] = ModelManager(model_name)
+                self.model_managers[model_name] = await ModelManager._initialize_model(model_name)
                 logger.info(f"Successfully initialized model: {model_name}")
             except Exception as e:
                 logger.error(f"Failed to initialize model {model_name}: {str(e)}")
                 raise
-        
+
         logger.info(f"LLM Serving API initialized with models: {list(self.model_managers.keys())}")
     
     @api.get("/health")
@@ -211,8 +317,8 @@ class LLMServingAPI:
         return {"status": "healthy", "models": ",".join(self.models)}
     
     # OpenAI-compatible endpoints
-    @api.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-    async def create_chat_completion(self, request: ChatCompletionRequest, background_tasks: BackgroundTasks) -> ChatCompletionResponse:
+    @api.post("/v1/chat/completions")
+    async def create_chat_completion(self, request: ChatCompletionRequest, background_tasks: BackgroundTasks):
         """OpenAI-compatible chat completion endpoint"""
         try:
             # Check if requested model is available
@@ -226,13 +332,29 @@ class LLMServingAPI:
             custom_params = {
                 "temperature": request.temperature,
                 "top_p": request.top_p,
-                "max_tokens": request.max_tokens
+                "max_tokens": request.max_tokens,
+                "output_kind": RequestOutputKind.DELTA
             }
+
+            request_id = random_uuid()
+
+            if request.stream:
+                # Return streaming response in OpenAI format
+                return StreamingResponse(
+                    self.model_managers[request.model].generate_chat_completion(
+                        request.messages, custom_params, request_id, stream=True
+                    ),
+                    media_type="text/plain"
+                )
             
-            # Generate chat completion
-            generated_text, tokens_generated, processing_time = self.model_managers[request.model].generate_chat_completion(
-                request.messages, custom_params
-            )
+            # Generate non-streaming chat completion
+            generated_text = ""
+            async for text_chunk in self.model_managers[request.model].generate_chat_completion(
+                request.messages, custom_params, request_id, stream=False
+            ):
+                generated_text += text_chunk
+            
+            tokens_generated = len(generated_text.split())  # Rough estimate
             
             # Create response in OpenAI format
             response_message = ChatMessage(role="assistant", content=generated_text)
@@ -249,7 +371,7 @@ class LLMServingAPI:
             )
             
             response = ChatCompletionResponse(
-                id=f"chatcmpl-{int(time.time())}",
+                id=f"chatcmpl-{request_id}",
                 created=int(time.time()),
                 model=request.model,
                 choices=[choice],

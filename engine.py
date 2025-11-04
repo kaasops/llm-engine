@@ -354,7 +354,7 @@ class LLMServingAPI:
                 # Return streaming response in OpenAI format
                 return StreamingResponse(
                     stream_with_sleep(),
-                    media_type="text/plain"
+                    media_type="text/event-stream"
                 )
             
             # Generate non-streaming chat completion

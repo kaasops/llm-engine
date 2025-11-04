@@ -339,11 +339,21 @@ class LLMServingAPI:
             request_id = random_uuid()
 
             if request.stream:
+                # Create a generator that includes sleep after streaming is complete
+                async def stream_with_sleep():
+                    model_manager = self.model_managers[request.model]
+                    try:
+                        async for chunk in model_manager.generate_chat_completion(
+                            request.messages, custom_params, request_id, stream=True
+                        ):
+                            yield chunk
+                    finally:
+                        # Put model to sleep after streaming is complete
+                        await model_manager.sleep_model_after_response()
+                
                 # Return streaming response in OpenAI format
                 return StreamingResponse(
-                    self.model_managers[request.model].generate_chat_completion(
-                        request.messages, custom_params, request_id, stream=True
-                    ),
+                    stream_with_sleep(),
                     media_type="text/plain"
                 )
             

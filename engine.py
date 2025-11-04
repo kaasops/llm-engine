@@ -150,6 +150,8 @@ class ModelManager:
         self.sampling_params = None
         self.s3_loader = None
         self.local_model_path = None
+        self.active_requests = 0
+        self.sleep_lock = asyncio.Lock()
         
     @classmethod
     async def _initialize_model(cls, model_name: str):
@@ -190,39 +192,86 @@ class ModelManager:
                 self.s3_loader.cleanup()
             raise
     
+    async def start_request(self):
+        """Increment active requests counter and wake up model if needed"""
+        async with self.sleep_lock:
+            self.active_requests += 1
+            logger.info(f"Model {self.model_name}: Active requests increased to {self.active_requests}")
+            
+            # Only wake up the model if it's sleeping and this is the first request
+            if self.active_requests == 1:
+                try:
+                    # Check if model is in sleep mode before waking up
+                    if hasattr(self.model, 'is_sleeping') and self.model.is_sleeping:
+                        await self.model.wake_up()
+                        logger.info(f"Model {self.model_name} woke up from sleep")
+                    else:
+                        # Model is already awake, no need to wake up
+                        pass
+                except AttributeError:
+                    # Fallback for older vLLM versions that don't have is_sleeping attribute
+                    await self.model.wake_up()
+    
+    async def end_request(self):
+        """Decrement active requests counter and put model to sleep if no more requests"""
+        async with self.sleep_lock:
+            self.active_requests = max(0, self.active_requests - 1)
+            logger.info(f"Model {self.model_name}: Active requests decreased to {self.active_requests}")
+            
+            # Only put model to sleep if there are no more active requests
+            if self.active_requests == 0:
+                try:
+                    await asyncio.sleep(0.1)  # Small delay to ensure response is sent
+                    await self.model.reset_prefix_cache()
+                    await self.model.sleep(level=1)
+                    logger.info(f"Model {self.model_name} put to sleep (no active requests)")
+                except Exception as e:
+                    logger.error(f"Failed to put model {self.model_name} to sleep: {str(e)}")
+    
     async def generate_chat_completion(self, messages: list[ChatMessage], custom_params: Optional[Dict[str, Any]] = None, request_id: str = "", stream: bool = False):
         """Generate chat completion with proper error handling and timing"""
-        # Convert messages to prompt format
-        prompt = self._format_messages_to_prompt(messages)
+        # Start tracking this request
+        await self.start_request()
         
-        # Only wake up the model if it's sleeping
         try:
-            # Check if model is in sleep mode before waking up
-            if hasattr(self.model, 'is_sleeping') and self.model.is_sleeping:
-                await self.model.wake_up()
-                logger.info(f"Model {self.model_name} woke up from sleep")
-            else:
-                # Model is already awake, no need to wake up
-                pass
-        except AttributeError:
-            # Fallback for older vLLM versions that don't have is_sleeping attribute
-            await self.model.wake_up()
-        
-        # Use custom sampling parameters if provided
-        sampling_params = self.sampling_params
-        if custom_params:
-            sampling_params = SamplingParams(**custom_params)
+            # Convert messages to prompt format
+            prompt = self._format_messages_to_prompt(messages)
+            
+            # Use custom sampling parameters if provided
+            sampling_params = self.sampling_params
+            if custom_params:
+                sampling_params = SamplingParams(**custom_params)
 
-        generated_text = ""
-        async for output in self.model.generate(prompt=prompt, sampling_params=sampling_params, request_id=request_id):
-            for completion in output.outputs:
-                # In DELTA mode, we get only new tokens generated since last iteration
-                new_text = completion.text
-                if new_text:
-                    generated_text += new_text
+            generated_text = ""
+            async for output in self.model.generate(prompt=prompt, sampling_params=sampling_params, request_id=request_id):
+                for completion in output.outputs:
+                    # In DELTA mode, we get only new tokens generated since last iteration
+                    new_text = completion.text
+                    if new_text:
+                        generated_text += new_text
+                        if stream:
+                            # Format as OpenAI streaming response
+                            chunk = {
+                                "id": f"chatcmpl-{request_id}",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": self.model_name,
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {
+                                            "content": new_text
+                                        },
+                                        "finish_reason": None
+                                    }
+                                ]
+                            }
+                            yield f"data: {JSONUtils.serialize(chunk)}\n\n"
+                # Check if generation is finished
+                if output.finished:
                     if stream:
-                        # Format as OpenAI streaming response
-                        chunk = {
+                        # Send final chunk with finish_reason
+                        final_chunk = {
                             "id": f"chatcmpl-{request_id}",
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
@@ -230,47 +279,21 @@ class ModelManager:
                             "choices": [
                                 {
                                     "index": 0,
-                                    "delta": {
-                                        "content": new_text
-                                    },
-                                    "finish_reason": None
+                                    "delta": {},
+                                    "finish_reason": "stop"
                                 }
                             ]
                         }
-                        yield f"data: {JSONUtils.serialize(chunk)}\n\n"
-            # Check if generation is finished
-            if output.finished:
-                if stream:
-                    # Send final chunk with finish_reason
-                    final_chunk = {
-                        "id": f"chatcmpl-{request_id}",
-                        "object": "chat.completion.chunk",
-                        "created": int(time.time()),
-                        "model": self.model_name,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {},
-                                "finish_reason": "stop"
-                            }
-                        ]
-                    }
-                    yield f"data: {JSONUtils.serialize(final_chunk)}\n\n"
-                    yield "data: [DONE]\n\n"
-                break
-        
-        if not stream:
-            yield generated_text
+                        yield f"data: {JSONUtils.serialize(final_chunk)}\n\n"
+                        yield "data: [DONE]\n\n"
+                    break
             
-    async def sleep_model_after_response(self):
-        """Put model to sleep after response is sent"""
-        try:
-            await asyncio.sleep(0.1)  # Small delay to ensure response is sent
-            await self.model.reset_prefix_cache()
-            await self.model.sleep(level=1)
-            logger.info(f"Model {self.model_name} put to sleep after response")
-        except Exception as e:
-            logger.error(f"Failed to put model {self.model_name} to sleep after response: {str(e)}")
+            if not stream:
+                yield generated_text
+        finally:
+            # End tracking this request
+            await self.end_request()
+            
     
     def _format_messages_to_prompt(self, messages: list[ChatMessage]) -> str:
         """Convert chat messages to a prompt string"""
@@ -349,21 +372,17 @@ class LLMServingAPI:
             request_id = random_uuid()
 
             if request.stream:
-                # Create a generator that includes sleep after streaming is complete
-                async def stream_with_sleep():
+                # Create a generator for streaming response
+                async def stream_generator():
                     model_manager = self.model_managers[request.model]
-                    try:
-                        async for chunk in model_manager.generate_chat_completion(
-                            request.messages, custom_params, request_id, stream=True
-                        ):
-                            yield chunk
-                    finally:
-                        # Put model to sleep after streaming is complete
-                        await model_manager.sleep_model_after_response()
+                    async for chunk in model_manager.generate_chat_completion(
+                        request.messages, custom_params, request_id, stream=True
+                    ):
+                        yield chunk
                 
                 # Return streaming response in OpenAI format
                 return StreamingResponse(
-                    stream_with_sleep(),
+                    stream_generator(),
                     media_type="text/event-stream"
                 )
             
@@ -398,8 +417,6 @@ class LLMServingAPI:
                 usage=usage
             )
             
-            # Schedule model sleep after response is sent
-            background_tasks.add_task(self.model_managers[request.model].sleep_model_after_response)
             
             return response
             

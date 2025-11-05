@@ -143,5 +143,27 @@ class LLMServingAPI:
 
         logger.info(f"LLM Serving API initialized with models: {list(self.model_managers.keys())}")
 
+    @api.get("/v1/models")
+    async def list_openai_models(self) -> dict[str, Any]:
+        """OpenAI-compatible models list endpoint"""
+        models_list = []
+        for model_name in self.models.keys():
+            models_list.append({
+                "id": model_name,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "vllm"
+            })
+        
+        return {
+            "object": "list",
+            "data": models_list
+        }
+
+    @api.get("/health")
+    async def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint"""
+        return {"status": "healthy", "models": list(self.models.keys())}
+
 # Ray Serve deployment
 app = LLMServingAPI.bind()

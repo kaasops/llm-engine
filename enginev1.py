@@ -13,10 +13,24 @@ from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.sampling_params import RequestOutputKind
 from vllm.utils import random_uuid
 from starlette.responses import StreamingResponse
+from typing import TYPE_CHECKING, AsyncGenerator
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: list[ChatMessage]
+    temperature: Optional[float] = 0.8
+    top_p: Optional[float] = 0.95
+    max_tokens: Optional[int] = 512
+    stream: Optional[bool] = False
 
 class ModelConfig:
     """Configuration class for model settings"""
@@ -60,6 +74,7 @@ class ModelManager:
     """Manages vLLM model lifecycle and operations"""
     def __init__(self):
         self.model_path = None
+        self.model_name = None
         self.engine = None
         self.sampling_params = None
         self.s3_loader = None
@@ -68,10 +83,11 @@ class ModelManager:
         self.sleep_lock = asyncio.Lock()
         
     @classmethod
-    async def start(cls, model_path: str):
+    async def start(cls, model_name: str, model_path: str):
         """Initialize the model with sleep mode enabled"""
         self = cls()
         self.model_path = model_path
+        self.model_name = model_name
         try:
             logger.info(f"Initializing model: {self.model_path}")
             
@@ -105,6 +121,42 @@ class ModelManager:
             if self.s3_loader:
                 self.s3_loader.cleanup()
             raise
+    
+    async def sleep_model_after_response(self):
+        """Put model to sleep after response is sent"""
+        try:
+            await self.engine.reset_prefix_cache()
+            await self.engine.sleep(level=1)
+            logger.info(f"Model {self.model_name} put to sleep after response")
+        except Exception as e:
+            logger.error(f"Failed to put model {self.model_name} to sleep after response: {str(e)}")
+
+    async def chat(self, request) -> AsyncGenerator:
+        try:
+            # Check if model is in sleep mode before waking up
+            if await self.engine.is_sleeping():
+                await self.engine.wake_up()
+                logger.info(f"Model {self.model_name} woke up from sleep")
+            else:
+                # Model is already awake, no need to wake up
+                pass
+        except:
+            logger.error("Failed to wake up model")
+        
+        text_resp = "cjslfk jcdlsk jcld  jfvkjfhd kfjhvdkfjvhdf klvjhdfklvjh vdfkjvhdfkjvhdf kjvhdfk jvhd bghjn bfghghhgh fvdlk dsdcsd bhhg bgh bvgffhbhgf vff"
+        tokens = text_resp.split(" ")
+
+        for i, token in enumerate(tokens):
+            chunk = {
+                "id": i,
+                "object": "chat.completion.chunk",
+                "created": time.time(),
+                "model": "blah",
+                "choices": [{"delta": {"content": token + " "}}],
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+            await asyncio.sleep(1)
+        yield "data: [DONE]\n\n"
 
 # FastAPI application
 api = FastAPI(
@@ -116,9 +168,7 @@ api = FastAPI(
 @serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0}, user_config={
     "models": [
         {"model_name": "Qwen/Qwen2.5-0.5B-Instruct","model_path": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775/"},
-        {"model_name": "Qwen/Qwen2.5-7B-Instruct","model_path": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28/"},
-        ]
-        })
+        {"model_name": "Qwen/Qwen2.5-7B-Instruct","model_path": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28/"}]})
 @serve.ingress(api)
 class LLMServingAPI:
     """Main API class for serving multiple LLM models"""
@@ -135,7 +185,7 @@ class LLMServingAPI:
         # Create model managers for each model
         for model_name, model_path in self.models.items():
             try:
-                self.model_managers[model_name] = await ModelManager.start(model_path)
+                self.model_managers[model_name] = await ModelManager.start(model_name, model_path)
                 logger.info(f"Successfully initialized model: {model_name} -> {model_path}")
             except Exception as e:
                 logger.error(f"Failed to initialize model {model_name} ({model_path}): {str(e)}")
@@ -164,6 +214,15 @@ class LLMServingAPI:
     async def health_check(self) -> Dict[str, Any]:
         """Health check endpoint"""
         return {"status": "healthy", "models": list(self.models.keys())}
+
+    @api.post("/v1/chat/completions")
+    async def chat(self, request: ChatCompletionRequest, background_tasks: BackgroundTasks):
+        model_manager = self.model_managers[request.model]
+        background_tasks.add_task(model_manager.sleep_model_after_response)
+        return StreamingResponse(
+            model_manager.chat(request),
+            media_type="text/event-stream"
+        )
 
 # Ray Serve deployment
 app = LLMServingAPI.bind()

@@ -81,6 +81,7 @@ class ModelManager:
         self.local_model_path = None
         self.active_requests = 0
         self.sleep_lock = asyncio.Lock()
+        self.active = False
         
     @classmethod
     async def start(cls, model_name: str, model_path: str):
@@ -130,6 +131,9 @@ class ModelManager:
             logger.info(f"Model {self.model_name} put to sleep after response")
         except Exception as e:
             logger.error(f"Failed to put model {self.model_name} to sleep after response: {str(e)}")
+    
+    async def deactivate(self):
+        self.active = False
 
     async def chat(self, request) -> AsyncGenerator:
         try:
@@ -178,6 +182,40 @@ class LLMServingAPI:
         self.models = []
         self.model_managers = {}
     
+    async def wait_for_available_model(self, max_wait_time: int = 60, wait_interval: float = 0.5) -> bool:
+        """
+        Wait until no model manager is active.
+        
+        Args:
+            max_wait_time: Maximum wait time in seconds (default: 60)
+            wait_interval: Check interval in seconds (default: 0.5)
+            
+        Returns:
+            bool: True if a model became available, False if timeout was reached
+        """
+        elapsed_time = 0
+        
+        while elapsed_time < max_wait_time:
+            # Check if any model manager is active
+            active_found = False
+            for name, manager in self.model_managers.items():
+                if manager.active:
+                    logger.info(f"Engine is busy, active model is: {name}. Waiting...")
+                    active_found = True
+                    break
+            
+            # If no active model found, return True (model is available)
+            if not active_found:
+                return True
+                
+            # Wait for the specified interval
+            await asyncio.sleep(wait_interval)
+            elapsed_time += wait_interval
+        
+        # Timeout reached
+        logger.error(f"Timeout waiting for model to become available after {max_wait_time} seconds")
+        return False
+    
     async def reconfigure(self, user_config: dict[str, Any]):
         # Get models from user_config
         self.models = ModelConfig.get_models_from_user_config(user_config)
@@ -217,12 +255,23 @@ class LLMServingAPI:
 
     @api.post("/v1/chat/completions")
     async def chat(self, request: ChatCompletionRequest, background_tasks: BackgroundTasks):
+        # Wait until no model manager is active
+        if not await self.wait_for_available_model():
+            raise HTTPException(status_code=503, detail="Service temporarily unavailable - all models are busy")
+        
+        # Get the requested model manager
+        if request.model not in self.model_managers:
+            raise HTTPException(status_code=404, detail=f"Model '{request.model}' not found")
+            
         model_manager = self.model_managers[request.model]
+        model_manager.active = True
         background_tasks.add_task(model_manager.sleep_model_after_response)
+        background_tasks.add_task(model_manager.deactivate)
         return StreamingResponse(
             model_manager.chat(request),
             media_type="text/event-stream"
         )
+    
 
 # Ray Serve deployment
 app = LLMServingAPI.bind()

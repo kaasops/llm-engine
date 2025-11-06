@@ -12,81 +12,14 @@ from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.v1.engine.async_llm import AsyncLLM
 from vllm.sampling_params import RequestOutputKind
 from vllm.utils import random_uuid
-# Third-party imports
 from starlette.responses import StreamingResponse
-
-# Standard library imports
+from typing import TYPE_CHECKING, AsyncGenerator
 import json
-from typing import Any, Dict, Union
-
-# Try to import orjson for better performance, fallback to standard json
-try:
-    import orjson
-    HAS_ORJSON = True
-except ImportError:
-    HAS_ORJSON = False
-
-
-class JSONUtils:
-    """Utility class for JSON operations with enhanced error handling and performance"""
-    
-    @staticmethod
-    def serialize(data: Any, ensure_ascii: bool = False) -> str:
-        """
-        Serialize data to JSON string with error handling
-        
-        Args:
-            data: Data to serialize
-            ensure_ascii: Whether to escape non-ASCII characters
-            
-        Returns:
-            JSON string
-            
-        Raises:
-            TypeError: If data is not JSON serializable
-        """
-        try:
-            # Use orjson for better performance if available
-            if HAS_ORJSON:
-                # orjson returns bytes, so we need to decode
-                return orjson.dumps(data).decode('utf-8')
-            else:
-                return json.dumps(data, ensure_ascii=ensure_ascii)
-        except (TypeError, ValueError) as e:
-            logger.error(f"JSON serialization failed: {str(e)}")
-            raise TypeError(f"Failed to serialize data to JSON: {str(e)}")
-    
-    @staticmethod
-    def deserialize(json_str: str) -> Union[Dict, list, str, int, float, bool, None]:
-        """
-        Deserialize JSON string with error handling
-        
-        Args:
-            json_str: JSON string to deserialize
-            
-        Returns:
-            Deserialized data
-            
-        Raises:
-            json.JSONDecodeError: If JSON string is invalid
-        """
-        try:
-            # Use orjson for better performance if available
-            if HAS_ORJSON:
-                return orjson.loads(json_str)
-            else:
-                return json.loads(json_str)
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"JSON deserialization failed: {str(e)}")
-            # Convert orjson error to json.JSONDecodeError for consistency
-            if HAS_ORJSON and isinstance(e, ValueError):
-                raise json.JSONDecodeError(f"Failed to parse JSON: {str(e)}", json_str, 0)
-            raise
-
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 # OpenAI-compatible schemas
 class ChatMessage(BaseModel):
@@ -129,110 +62,134 @@ class ModelConfig:
     }
     
     @staticmethod
-    def get_models_from_env() -> list:
-        """Get list of models from MODELS environment variable"""
-        models_env = os.getenv("MODELS", "")
-        if not models_env:
-            raise ValueError("MODELS environment variable is not set")
+    def get_models_from_user_config(user_config: dict[str, Any]) -> dict[str, str]:
+        """Get dictionary of model names and paths from user_config dictionary"""
+        if not user_config or "models" not in user_config:
+            raise ValueError("user_config does not contain 'models' key")
         
-        models = [model.strip() for model in models_env.split(",") if model.strip()]
+        models_config = user_config["models"]
+        if not isinstance(models_config, list):
+            raise ValueError("'models' in user_config must be a list")
+        
+        # Extract model_name and model_path from each model configuration
+        models = {}
+        for model_config in models_config:
+            if isinstance(model_config, dict) and "model_path" in model_config:
+                model_name = model_config.get("model_name", model_config["model_path"].split("/")[-1])
+                models[model_name] = model_config["model_path"]
+            elif isinstance(model_config, str):
+                # Handle case where model is just a string path
+                model_name = model_config.split("/")[-1]
+                models[model_name] = model_config
+            else:
+                logger.warning(f"Skipping invalid model configuration: {model_config}")
+        
         if not models:
-            raise ValueError("No valid models found in MODELS environment variable")
+            raise ValueError("No valid models found in user_config")
         
-        logger.info(f"Loaded models from environment: {models}")
+        logger.info(f"Loaded model names and paths from user_config: {models}")
         return models
-
+    
 class ModelManager:
     """Manages vLLM model lifecycle and operations"""
     def __init__(self):
+        self.model_path = None
         self.model_name = None
-        self.model = None
+        self.engine = None
         self.sampling_params = None
         self.s3_loader = None
         self.local_model_path = None
         self.active_requests = 0
         self.sleep_lock = asyncio.Lock()
+        self.request_lock = asyncio.Lock()
         
     @classmethod
-    async def _initialize_model(cls, model_name: str):
+    async def start(cls, model_name: str, model_path: str):
         """Initialize the model with sleep mode enabled"""
         self = cls()
+        self.model_path = model_path
         self.model_name = model_name
         try:
-            logger.info(f"Initializing model: {self.model_name}")
+            logger.info(f"Initializing model: {self.model_path}")
             
             # Check if model is from S3
-            if self.model_name.startswith("s3://"):
-                logger.info(f"Detected S3 model: {self.model_name}")
+            if self.model_path.startswith("s3://"):
+                logger.info(f"Detected S3 model: {self.model_path}")
                 self.s3_loader = S3ModelLoader()
-                self.local_model_path = self.s3_loader.download_model_from_s3(self.model_name)
+                self.local_model_path = self.s3_loader.download_model_from_s3(self.model_path)
                 # Use the local path for vLLM
                 actual_model_path = self.local_model_path
             else:
                 # Use HuggingFace model directly
-                actual_model_path = self.model_name
+                actual_model_path = self.model_path
 
             engine_args = AsyncEngineArgs(
                 model=actual_model_path,
                 enforce_eager=True,
                 enable_sleep_mode=True,
             )
-            self.model = AsyncLLM.from_engine_args(engine_args)
+            self.engine = AsyncLLM.from_engine_args(engine_args)
             self.sampling_params = SamplingParams(**ModelConfig.DEFAULT_SAMPLING_PARAMS)
-            await self.model.reset_prefix_cache()
-            await self.model.sleep(level=1)
-            logger.info(f"Model {self.model_name} initialized successfully")
+            await self.engine.reset_prefix_cache()
+            await self.engine.sleep(level=1)
+            logger.info(f"Model {self.model_path} initialized successfully")
             if self.s3_loader:
                 self.s3_loader.cleanup()
             return self
         except Exception as e:
-            logger.error(f"Failed to initialize model {self.model_name}: {str(e)}")
+            logger.error(f"Failed to initialize model {self.model_path}: {str(e)}")
             # Clean up S3 loader if it was created
             if self.s3_loader:
                 self.s3_loader.cleanup()
             raise
     
-    async def start_request(self):
-        """Increment active requests counter and wake up model if needed"""
-        async with self.sleep_lock:
-            self.active_requests += 1
-            logger.info(f"Model {self.model_name}: Active requests increased to {self.active_requests}")
+    async def sleep_model_after_response(self):
+        """Put model to sleep after response is sent, but only if no active requests"""
+        async with self.request_lock:
+            self.active_requests -= 1
+            logger.info(f"Request completed. Active requests for {self.model_name}: {self.active_requests}")
             
-            # Only wake up the model if it's sleeping and this is the first request
-            if self.active_requests == 1:
+            # Only put model to sleep if there are no active requests
+            if self.active_requests <= 0:
                 try:
-                    # Check if model is in sleep mode before waking up
-                    if hasattr(self.model, 'is_sleeping') and self.model.is_sleeping:
-                        await self.model.wake_up()
-                        logger.info(f"Model {self.model_name} woke up from sleep")
-                    else:
-                        # Model is already awake, no need to wake up
-                        pass
-                except AttributeError:
-                    # Fallback for older vLLM versions that don't have is_sleeping attribute
-                    await self.model.wake_up()
-    
-    async def end_request(self):
-        """Decrement active requests counter and put model to sleep if no more requests"""
-        async with self.sleep_lock:
-            self.active_requests = max(0, self.active_requests - 1)
-            logger.info(f"Model {self.model_name}: Active requests decreased to {self.active_requests}")
-            
-            # Only put model to sleep if there are no more active requests
-            if self.active_requests == 0:
-                try:
-                    await asyncio.sleep(0.1)  # Small delay to ensure response is sent
-                    await self.model.reset_prefix_cache()
-                    await self.model.sleep(level=1)
-                    logger.info(f"Model {self.model_name} put to sleep (no active requests)")
+                    await self.engine.reset_prefix_cache()
+                    await self.engine.sleep(level=1)
+                    logger.info(f"Model {self.model_name} put to sleep after response (no active requests)")
                 except Exception as e:
-                    logger.error(f"Failed to put model {self.model_name} to sleep: {str(e)}")
-    
-    async def generate_chat_completion(self, messages: list[ChatMessage], custom_params: Optional[Dict[str, Any]] = None, request_id: str = "", stream: bool = False):
-        """Generate chat completion with proper error handling and timing"""
-        # Start tracking this request
-        await self.start_request()
+                    logger.error(f"Failed to put model {self.model_name} to sleep after response: {str(e)}")
+
+    def _format_messages_to_prompt(self, messages: list[ChatMessage]) -> str:
+        """Convert chat messages to a prompt string"""
+        prompt = ""
+        for message in messages:
+            if message.role == "system":
+                prompt += f"System: {message.content}\n\n"
+            elif message.role == "user":
+                prompt += f"User: {message.content}\n\n"
+            elif message.role == "assistant":
+                prompt += f"Assistant: {message.content}\n\n"
         
+        # Add the final assistant prompt
+        prompt += "Assistant:"
+        return prompt
+
+    async def chat(self, messages: list[ChatMessage], custom_params: Optional[Dict[str, Any]] = None, request_id: str = "", stream: bool = False) -> AsyncGenerator:
+        # Increment active requests counter
+        async with self.request_lock:
+            self.active_requests += 1
+            logger.info(f"New request started. Active requests for {self.model_name}: {self.active_requests}")
+        
+        try:
+            # Check if model is in sleep mode before waking up
+            if await self.engine.is_sleeping():
+                await self.engine.wake_up()
+                logger.info(f"Model {self.model_name} woke up from sleep")
+            else:
+                # Model is already awake, no need to wake up
+                pass
+        except:
+            logger.error("Failed to wake up model")
+
         try:
             # Convert messages to prompt format
             prompt = self._format_messages_to_prompt(messages)
@@ -243,7 +200,7 @@ class ModelManager:
                 sampling_params = SamplingParams(**custom_params)
 
             generated_text = ""
-            async for output in self.model.generate(prompt=prompt, sampling_params=sampling_params, request_id=request_id):
+            async for output in self.engine.generate(prompt=prompt, sampling_params=sampling_params, request_id=request_id):
                 for completion in output.outputs:
                     # In DELTA mode, we get only new tokens generated since last iteration
                     new_text = completion.text
@@ -266,7 +223,7 @@ class ModelManager:
                                     }
                                 ]
                             }
-                            yield f"data: {JSONUtils.serialize(chunk)}\n\n"
+                            yield f"data: {json.dumps(chunk)}\n\n"
                 # Check if generation is finished
                 if output.finished:
                     if stream:
@@ -284,36 +241,18 @@ class ModelManager:
                                 }
                             ]
                         }
-                        yield f"data: {JSONUtils.serialize(final_chunk)}\n\n"
+                        yield f"data: {json.dumps(final_chunk)}\n\n"
                         yield "data: [DONE]\n\n"
                     break
             
             if not stream:
                 yield generated_text
-        finally:
-            # End tracking this request
-            await self.end_request()
-            
-    
-    def _format_messages_to_prompt(self, messages: list[ChatMessage]) -> str:
-        """Convert chat messages to a prompt string"""
-        prompt = ""
-        for message in messages:
-            if message.role == "system":
-                prompt += f"System: {message.content}\n\n"
-            elif message.role == "user":
-                prompt += f"User: {message.content}\n\n"
-            elif message.role == "assistant":
-                prompt += f"Assistant: {message.content}\n\n"
-        
-        # Add the final assistant prompt
-        prompt += "Assistant:"
-        return prompt
-    
-    async def cleanup(self):
-        """Clean up S3 model resources if applicable"""
-        if self.s3_loader:
-            self.s3_loader.cleanup()
+        except Exception as e:
+            # Ensure we decrement the counter even if there's an error during streaming
+            async with self.request_lock:
+                self.active_requests -= 1
+                logger.error(f"Error during chat streaming for {self.model_name}: {str(e)}")
+            raise
 
 # FastAPI application
 api = FastAPI(
@@ -321,47 +260,117 @@ api = FastAPI(
     description="Serving vLLM models through Ray Serve with OpenAPI docs. Includes OpenAI-compatible endpoints.",
     version="1.0.0"
 )
-
-@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0}, user_config={"model": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775/"})
+ 
+@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0},user_config={
+    "models": [
+        {"model_name": "Qwen/Qwen2.5-0.5B-Instruct","model_path": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775/"},
+        {"model_name": "Qwen/Qwen2.5-7B-Instruct","model_path": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28/"}]})
 @serve.ingress(api)
 class LLMServingAPI:
     """Main API class for serving multiple LLM models"""
     
     def __init__(self):
-        # Get models from environment variable
-        self.models = ModelConfig.get_models_from_env()        
+        # Initialize empty models list - will be populated in reconfigure
+        self.models = []
         self.model_managers = {}
+        self.current_active_model = None  # Track the currently active model
+        self.active_consumers = {}  # Track active consumers for each model
+        self.consumer_lock = asyncio.Lock()  # Lock for thread-safe consumer count updates
     
-    async def reconfigure(self, config: dict):
+    async def wait_for_available_model(self, requested_model: str, max_wait_time: int = 60, wait_interval: float = 0.5) -> bool:
+        # If no model is currently active or the requested model is the same as the current active model, no need to wait
+        if self.current_active_model is None or self.current_active_model == requested_model:
+            return True
+            
+        elapsed_time = 0
+        
+        while elapsed_time < max_wait_time:
+            if self.current_active_model is None:
+                 return True
+            logger.info(f"Waiting for model switch from {self.current_active_model} to {requested_model}...")
+            # Wait for the specified interval
+            await asyncio.sleep(wait_interval)
+            elapsed_time += wait_interval
+        
+        # Timeout reached
+        logger.error(f"Timeout waiting for model switch from {self.current_active_model} to {requested_model} after {max_wait_time} seconds")
+        return False
+    
+    async def decrement_consumer_count(self, model_name: str):
+        """Decrement the consumer count for a specific model"""
+        async with self.consumer_lock:
+            if model_name in self.active_consumers:
+                self.active_consumers[model_name] -= 1
+                logger.info(f"Decremented consumer count for {model_name}: {self.active_consumers[model_name]}")
+                
+                # If no more active consumers, we could optionally clean up resources
+                if self.active_consumers[model_name] <= 0:
+                    self.active_consumers[model_name] = 0
+                    logger.info(f"No more active consumers for {model_name}")
+                    self.current_active_model = None
+            else:
+                logger.warning(f"Attempted to decrement consumer count for unknown model: {model_name}")
+    
+    async def reconfigure(self, user_config: dict[str, Any]):
+        # Get models from user_config
+        self.models = ModelConfig.get_models_from_user_config(user_config)
+        
         # Create model managers for each model
-        for model_name in self.models:
+        for model_name, model_path in self.models.items():
             try:
-                self.model_managers[model_name] = await ModelManager._initialize_model(model_name)
-                logger.info(f"Successfully initialized model: {model_name}")
+                self.model_managers[model_name] = await ModelManager.start(model_name, model_path)
+                logger.info(f"Successfully initialized model: {model_name} -> {model_path}")
             except Exception as e:
-                logger.error(f"Failed to initialize model {model_name}: {str(e)}")
+                logger.error(f"Failed to initialize model {model_name} ({model_path}): {str(e)}")
                 raise
 
         logger.info(f"LLM Serving API initialized with models: {list(self.model_managers.keys())}")
-    
+
+    @api.get("/v1/models")
+    async def list_openai_models(self) -> dict[str, Any]:
+        """OpenAI-compatible models list endpoint"""
+        models_list = []
+        for model_name in self.models.keys():
+            models_list.append({
+                "id": model_name,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "vllm"
+            })
+        
+        return {
+            "object": "list",
+            "data": models_list
+        }
+
     @api.get("/health")
-    async def health_check(self) -> Dict[str, str]:
+    async def health_check(self) -> Dict[str, Any]:
         """Health check endpoint"""
-        return {"status": "healthy", "models": ",".join(self.models)}
-    
-    # OpenAI-compatible endpoints
+        return {"status": "healthy", "models": list(self.models.keys())}
+
     @api.post("/v1/chat/completions")
-    async def create_chat_completion(self, request: ChatCompletionRequest, background_tasks: BackgroundTasks):
-        """OpenAI-compatible chat completion endpoint"""
-        try:
-            # Check if requested model is available
-            if request.model not in self.model_managers:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Model {request.model} not found. Available models: {list(self.model_managers.keys())}"
-                )
+    async def chat(self, request: ChatCompletionRequest, background_tasks: BackgroundTasks):
+        # Get the requested model manager
+        if request.model not in self.model_managers:
+            raise HTTPException(status_code=404, detail=f"Model '{request.model}' not found")
             
-            # Prepare custom sampling parameters
+        # Wait only when model is changed
+        if not await self.wait_for_available_model(request.model):
+            raise HTTPException(status_code=503, detail="Service temporarily unavailable - model switch timeout")
+            
+        model_manager = self.model_managers[request.model]
+        logger.info(f"Set active manager {request.model}")
+        self.current_active_model = request.model  # Update the current active model
+        
+        # Increment consumer count for the model
+        async with self.consumer_lock:
+            if request.model not in self.active_consumers:
+                self.active_consumers[request.model] = 0
+            self.active_consumers[request.model] += 1
+            logger.info(f"Active consumers for {request.model}: {self.active_consumers[request.model]}")
+        
+        # Create a wrapper generator that handles cleanup after streaming
+        try:
             custom_params = {
                 "temperature": request.temperature,
                 "top_p": request.top_p,
@@ -375,7 +384,7 @@ class LLMServingAPI:
                 # Create a generator for streaming response
                 async def stream_generator():
                     model_manager = self.model_managers[request.model]
-                    async for chunk in model_manager.generate_chat_completion(
+                    async for chunk in model_manager.chat(
                         request.messages, custom_params, request_id, stream=True
                     ):
                         yield chunk
@@ -388,7 +397,7 @@ class LLMServingAPI:
             
             # Generate non-streaming chat completion
             generated_text = ""
-            async for text_chunk in self.model_managers[request.model].generate_chat_completion(
+            async for text_chunk in self.model_managers[request.model].chat(
                 request.messages, custom_params, request_id, stream=False
             ):
                 generated_text += text_chunk
@@ -416,31 +425,15 @@ class LLMServingAPI:
                 choices=[choice],
                 usage=usage
             )
-            
-            
+
             return response
-            
         except Exception as e:
             logger.error(f"Chat completion failed for model {request.model}: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Chat completion failed: {str(e)}")
-    
-    @api.get("/v1/models")
-    async def list_openai_models(self) -> Dict[str, Any]:
-        """OpenAI-compatible models list endpoint"""
-        models_list = []
-        for model_name in self.models:
-            models_list.append({
-                "id": model_name,
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "vllm"
-            })
-        
-        return {
-            "object": "list",
-            "data": models_list
-        }
-
+        finally:
+            # Add background tasks only after streaming is complete
+            background_tasks.add_task(model_manager.sleep_model_after_response)
+            background_tasks.add_task(self.decrement_consumer_count, request.model)
 
 # Ray Serve deployment
 app = LLMServingAPI.bind()

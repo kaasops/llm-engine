@@ -52,7 +52,6 @@ spec:
         runtime_env:
           working_dir: {{ .Values.working_dir }}
           env_vars:
-            MODELS: {{ include "llm-engine.modelsString" . }}
             VLLM_USE_V1: "1"
             HF_TOKEN: {{ .Values.hf_token | quote }}
             {{- if .Values.extraEnvVars }}
@@ -64,7 +63,13 @@ spec:
           - name: LLMServingAPI
             ray_actor_options:
               {{- toYaml .Values.ray_actor_options | nindent 14 }}
-      {{- with .Values.extraApplications }}
-      {{ toYaml . | nindent 6 }}
-      {{- end }}
+            user_config:
+              models:
+            {{- range .Values.models }}
+                - name: {{ .name }}
+                  model_path: {{ .model_path }}
+            {{- end }}
+            {{- if .Values.extraApplications }}
+            {{ toYaml .Values.extraApplications | nindent 6 }}
+            {{- end }}
 ---

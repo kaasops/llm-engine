@@ -81,7 +81,7 @@ class ModelManager:
         self.local_model_path = None
         self.active_requests = 0
         self.sleep_lock = asyncio.Lock()
-        self.active = False
+        self.request_lock = asyncio.Lock()
         
     @classmethod
     async def start(cls, model_name: str, model_path: str):
@@ -124,18 +124,26 @@ class ModelManager:
             raise
     
     async def sleep_model_after_response(self):
-        """Put model to sleep after response is sent"""
-        try:
-            await self.engine.reset_prefix_cache()
-            await self.engine.sleep(level=1)
-            logger.info(f"Model {self.model_name} put to sleep after response")
-        except Exception as e:
-            logger.error(f"Failed to put model {self.model_name} to sleep after response: {str(e)}")
-    
-    async def deactivate(self):
-        self.active = False
+        """Put model to sleep after response is sent, but only if no active requests"""
+        async with self.request_lock:
+            self.active_requests -= 1
+            logger.info(f"Request completed. Active requests for {self.model_name}: {self.active_requests}")
+            
+            # Only put model to sleep if there are no active requests
+            if self.active_requests <= 0:
+                try:
+                    await self.engine.reset_prefix_cache()
+                    await self.engine.sleep(level=1)
+                    logger.info(f"Model {self.model_name} put to sleep after response (no active requests)")
+                except Exception as e:
+                    logger.error(f"Failed to put model {self.model_name} to sleep after response: {str(e)}")
 
     async def chat(self, request) -> AsyncGenerator:
+        # Increment active requests counter
+        async with self.request_lock:
+            self.active_requests += 1
+            logger.info(f"New request started. Active requests for {self.model_name}: {self.active_requests}")
+        
         try:
             # Check if model is in sleep mode before waking up
             if await self.engine.is_sleeping():
@@ -150,17 +158,24 @@ class ModelManager:
         text_resp = "cjslfk jcdlsk jcld  jfvkjfhd kfjhvdkfjvhdf klvjhdfklvjh vdfkjvhdfkjvhdf kjvhdfk jvhd bghjn bfghghhgh fvdlk dsdcsd bhhg bgh bvgffhbhgf vff"
         tokens = text_resp.split(" ")
 
-        for i, token in enumerate(tokens):
-            chunk = {
-                "id": i,
-                "object": "chat.completion.chunk",
-                "created": time.time(),
-                "model": "blah",
-                "choices": [{"delta": {"content": token + " "}}],
-            }
-            yield f"data: {json.dumps(chunk)}\n\n"
-            await asyncio.sleep(1)
-        yield "data: [DONE]\n\n"
+        try:
+            for i, token in enumerate(tokens):
+                chunk = {
+                    "id": i,
+                    "object": "chat.completion.chunk",
+                    "created": time.time(),
+                    "model": "blah",
+                    "choices": [{"delta": {"content": token + " "}}],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+                await asyncio.sleep(1)
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            # Ensure we decrement the counter even if there's an error during streaming
+            async with self.request_lock:
+                self.active_requests -= 1
+                logger.error(f"Error during chat streaming for {self.model_name}: {str(e)}")
+            raise
 
 # FastAPI application
 api = FastAPI(
@@ -168,8 +183,8 @@ api = FastAPI(
     description="Serving vLLM models through Ray Serve with OpenAPI docs. Includes OpenAI-compatible endpoints.",
     version="1.0.0"
 )
-
-@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0}, user_config={
+ 
+@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0},user_config={
     "models": [
         {"model_name": "Qwen/Qwen2.5-0.5B-Instruct","model_path": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775/"},
         {"model_name": "Qwen/Qwen2.5-7B-Instruct","model_path": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28/"}]})
@@ -181,40 +196,43 @@ class LLMServingAPI:
         # Initialize empty models list - will be populated in reconfigure
         self.models = []
         self.model_managers = {}
+        self.current_active_model = None  # Track the currently active model
+        self.active_consumers = {}  # Track active consumers for each model
+        self.consumer_lock = asyncio.Lock()  # Lock for thread-safe consumer count updates
     
-    async def wait_for_available_model(self, max_wait_time: int = 60, wait_interval: float = 0.5) -> bool:
-        """
-        Wait until no model manager is active.
-        
-        Args:
-            max_wait_time: Maximum wait time in seconds (default: 60)
-            wait_interval: Check interval in seconds (default: 0.5)
+    async def wait_for_available_model(self, requested_model: str, max_wait_time: int = 60, wait_interval: float = 0.5) -> bool:
+        # If no model is currently active or the requested model is the same as the current active model, no need to wait
+        if self.current_active_model is None or self.current_active_model == requested_model:
+            return True
             
-        Returns:
-            bool: True if a model became available, False if timeout was reached
-        """
         elapsed_time = 0
         
         while elapsed_time < max_wait_time:
-            # Check if any model manager is active
-            active_found = False
-            for name, manager in self.model_managers.items():
-                if manager.active:
-                    logger.info(f"Engine is busy, active model is: {name}. Waiting...")
-                    active_found = True
-                    break
-            
-            # If no active model found, return True (model is available)
-            if not active_found:
-                return True
-                
+            if self.current_active_model is None:
+                 return True
+            logger.info(f"Waiting for model switch from {self.current_active_model} to {requested_model}...")
             # Wait for the specified interval
             await asyncio.sleep(wait_interval)
             elapsed_time += wait_interval
         
         # Timeout reached
-        logger.error(f"Timeout waiting for model to become available after {max_wait_time} seconds")
+        logger.error(f"Timeout waiting for model switch from {self.current_active_model} to {requested_model} after {max_wait_time} seconds")
         return False
+    
+    async def decrement_consumer_count(self, model_name: str):
+        """Decrement the consumer count for a specific model"""
+        async with self.consumer_lock:
+            if model_name in self.active_consumers:
+                self.active_consumers[model_name] -= 1
+                logger.info(f"Decremented consumer count for {model_name}: {self.active_consumers[model_name]}")
+                
+                # If no more active consumers, we could optionally clean up resources
+                if self.active_consumers[model_name] <= 0:
+                    self.active_consumers[model_name] = 0
+                    logger.info(f"No more active consumers for {model_name}")
+                    self.current_active_model = None
+            else:
+                logger.warning(f"Attempted to decrement consumer count for unknown model: {model_name}")
     
     async def reconfigure(self, user_config: dict[str, Any]):
         # Get models from user_config
@@ -255,23 +273,39 @@ class LLMServingAPI:
 
     @api.post("/v1/chat/completions")
     async def chat(self, request: ChatCompletionRequest, background_tasks: BackgroundTasks):
-        # Wait until no model manager is active
-        if not await self.wait_for_available_model():
-            raise HTTPException(status_code=503, detail="Service temporarily unavailable - all models are busy")
-        
         # Get the requested model manager
         if request.model not in self.model_managers:
             raise HTTPException(status_code=404, detail=f"Model '{request.model}' not found")
             
+        # Wait only when model is changed
+        if not await self.wait_for_available_model(request.model):
+            raise HTTPException(status_code=503, detail="Service temporarily unavailable - model switch timeout")
+            
         model_manager = self.model_managers[request.model]
-        model_manager.active = True
-        background_tasks.add_task(model_manager.sleep_model_after_response)
-        background_tasks.add_task(model_manager.deactivate)
+        logger.info(f"Set active manager {request.model}")
+        self.current_active_model = request.model  # Update the current active model
+        
+        # Increment consumer count for the model
+        async with self.consumer_lock:
+            if request.model not in self.active_consumers:
+                self.active_consumers[request.model] = 0
+            self.active_consumers[request.model] += 1
+            logger.info(f"Active consumers for {request.model}: {self.active_consumers[request.model]}")
+        
+        # Create a wrapper generator that handles cleanup after streaming
+        async def chat_with_cleanup():
+            try:
+                async for chunk in model_manager.chat(request):
+                    yield chunk
+            finally:
+                # Add background tasks only after streaming is complete
+                background_tasks.add_task(model_manager.sleep_model_after_response)
+                background_tasks.add_task(self.decrement_consumer_count, request.model)
+        
         return StreamingResponse(
-            model_manager.chat(request),
+            chat_with_cleanup(),
             media_type="text/event-stream"
         )
-    
 
 # Ray Serve deployment
 app = LLMServingAPI.bind()

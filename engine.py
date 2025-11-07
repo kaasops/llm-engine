@@ -318,6 +318,11 @@ class LLMServingAPI:
         # Create model managers for each model
         for model_name, model_path in self.models.items():
             try:
+                # Check if ModelManager for this model is already initialized
+                if model_name in self.model_managers:
+                    logger.info(f"Model {model_name} already initialized, skipping initialization")
+                    continue
+                
                 self.model_managers[model_name] = await ModelManager.start(model_name, model_path)
                 logger.info(f"Successfully initialized model: {model_name} -> {model_path}")
             except Exception as e:

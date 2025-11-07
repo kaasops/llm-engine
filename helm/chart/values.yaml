@@ -5,10 +5,10 @@ name: llm-engine
 rayVersion: 2.49.2
 image: "rayproject/ray-llm:{{ .Values.rayVersion }}-py311-cu128"
 models:
-  - name: Qwen/Qwen2.5-7B-Instruct
-    model_path: s3://ml-inference-shared-models/Qwen2.5-0.5B-Instruct
-  - name: Qwen/Qwen2.5-0.5B-Instruct
-    model_path: s3://ml-inference-shared-models/Qwen2.5-7B-Instruct
+  - model_id: Qwen2.5-7B-Instruct
+    model_source: Qwen/Qwen2.5-7B-Instruct
+  - model_id: Qwen2.5-0.5B-Instruct
+    model_source: Qwen/Qwen2.5-0.5B-Instruct
 working_dir: https://github.com/kaasops/llm-engine/archive/refs/heads/master.zip
 import_path: engine:app
 hf_token: ''

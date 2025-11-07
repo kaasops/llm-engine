@@ -3,7 +3,23 @@ entries:
   llm-engine:
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-11-06T15:34:00.613528599+02:00"
+    created: "2025-11-07T10:13:38.727667332+02:00"
+    dependencies:
+    - condition: kuberay-operator.enabled
+      name: kuberay-operator
+      repository: https://ray-project.github.io/kuberay-helm/
+      version: 1.4.0
+    description: A Helm chart for deploying LLM Engine with multiple models using
+      Ray Serve
+    digest: 27e368dd94333b560d1772fc8c4cf3dc89efa5c4fad87e4f00a0acd768f2a03e
+    name: llm-engine
+    type: application
+    urls:
+    - https://kaasops.github.io/llm-engine/helm/packages/llm-engine-0.1.5.tgz
+    version: 0.1.5
+  - apiVersion: v2
+    appVersion: 1.0.0
+    created: "2025-11-07T10:13:38.723301644+02:00"
     dependencies:
     - condition: kuberay-operator.enabled
       name: kuberay-operator
@@ -19,7 +35,7 @@ entries:
     version: 0.1.4
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-11-06T15:34:00.609426999+02:00"
+    created: "2025-11-07T10:13:38.718971398+02:00"
     dependencies:
     - condition: kuberay-operator.enabled
       name: kuberay-operator
@@ -35,7 +51,7 @@ entries:
     version: 0.1.3
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-11-06T15:34:00.605380115+02:00"
+    created: "2025-11-07T10:13:38.714676377+02:00"
     dependencies:
     - condition: kuberay-operator.enabled
       name: kuberay-operator
@@ -51,7 +67,7 @@ entries:
     version: 0.1.2
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-11-06T15:34:00.601225775+02:00"
+    created: "2025-11-07T10:13:38.710457359+02:00"
     dependencies:
     - condition: kuberay-operator.enabled
       name: kuberay-operator
@@ -67,7 +83,7 @@ entries:
     version: 0.1.1
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-11-06T15:34:00.595746764+02:00"
+    created: "2025-11-07T10:13:38.704923918+02:00"
     dependencies:
     - condition: kuberay-operator.enabled
       name: kuberay-operator
@@ -81,4 +97,4 @@ entries:
     urls:
     - https://kaasops.github.io/llm-engine/helm/packages/llm-engine-0.1.0.tgz
     version: 0.1.0
-generated: "2025-11-06T15:34:00.589509605+02:00"
+generated: "2025-11-07T10:13:38.69832228+02:00"

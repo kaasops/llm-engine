@@ -66,8 +66,8 @@ spec:
             user_config:
               models:
             {{- range .Values.models }}
-                - name: {{ .name }}
-                  model_path: {{ .model_path }}
+                - model_id: {{ .name }}
+                  model_source: {{ .model_path }}
             {{- end }}
             {{- if .Values.extraApplications }}
             {{ toYaml .Values.extraApplications | nindent 6 }}

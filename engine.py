@@ -70,16 +70,16 @@ class ModelConfig:
         if not isinstance(models_config, list):
             raise ValueError("'models' in user_config must be a list")
         
-        # Extract model_name and model_path from each model configuration
+        # Extract model_id and model_source from each model configuration
         models = {}
         for model_config in models_config:
-            if isinstance(model_config, dict) and "model_path" in model_config:
-                model_name = model_config.get("model_name", model_config["model_path"].split("/")[-1])
-                models[model_name] = model_config["model_path"]
+            if isinstance(model_config, dict) and "model_source" in model_config:
+                model_id = model_config.get("model_id", model_config["model_source"].split("/")[-1])
+                models[model_id] = model_config["model_source"]
             elif isinstance(model_config, str):
                 # Handle case where model is just a string path
-                model_name = model_config.split("/")[-1]
-                models[model_name] = model_config
+                model_id = model_config.split("/")[-1]
+                models[model_id] = model_config
             else:
                 logger.warning(f"Skipping invalid model configuration: {model_config}")
         
@@ -92,8 +92,8 @@ class ModelConfig:
 class ModelManager:
     """Manages vLLM model lifecycle and operations"""
     def __init__(self):
-        self.model_path = None
-        self.model_name = None
+        self.model_source = None
+        self.model_id = None
         self.engine = None
         self.sampling_params = None
         self.s3_loader = None
@@ -103,24 +103,24 @@ class ModelManager:
         self.request_lock = asyncio.Lock()
         
     @classmethod
-    async def start(cls, model_name: str, model_path: str):
+    async def start(cls, model_id: str, model_source: str):
         """Initialize the model with sleep mode enabled"""
         self = cls()
-        self.model_path = model_path
-        self.model_name = model_name
+        self.model_source = model_source
+        self.model_id = model_id
         try:
-            logger.info(f"Initializing model: {self.model_path}")
+            logger.info(f"Initializing model: {self.model_source}")
             
             # Check if model is from S3
-            if self.model_path.startswith("s3://"):
-                logger.info(f"Detected S3 model: {self.model_path}")
+            if self.model_source.startswith("s3://"):
+                logger.info(f"Detected S3 model: {self.model_source}")
                 self.s3_loader = S3ModelLoader()
-                self.local_model_path = self.s3_loader.download_model_from_s3(self.model_path)
+                self.local_model_path = self.s3_loader.download_model_from_s3(self.model_source)
                 # Use the local path for vLLM
                 actual_model_path = self.local_model_path
             else:
                 # Use HuggingFace model directly
-                actual_model_path = self.model_path
+                actual_model_path = self.model_source
 
             engine_args = AsyncEngineArgs(
                 model=actual_model_path,
@@ -131,12 +131,12 @@ class ModelManager:
             self.sampling_params = SamplingParams(**ModelConfig.DEFAULT_SAMPLING_PARAMS)
             await self.engine.reset_prefix_cache()
             await self.engine.sleep(level=1)
-            logger.info(f"Model {self.model_path} initialized successfully")
+            logger.info(f"Model {self.model_source} initialized successfully")
             if self.s3_loader:
                 self.s3_loader.cleanup()
             return self
         except Exception as e:
-            logger.error(f"Failed to initialize model {self.model_path}: {str(e)}")
+            logger.error(f"Failed to initialize model {self.model_source}: {str(e)}")
             # Clean up S3 loader if it was created
             if self.s3_loader:
                 self.s3_loader.cleanup()
@@ -146,16 +146,16 @@ class ModelManager:
         """Put model to sleep after response is sent, but only if no active requests"""
         async with self.request_lock:
             self.active_requests -= 1
-            logger.info(f"Request completed. Active requests for {self.model_name}: {self.active_requests}")
+            logger.info(f"Request completed. Active requests for {self.model_id}: {self.active_requests}")
             
             # Only put model to sleep if there are no active requests
             if self.active_requests <= 0:
                 try:
                     await self.engine.reset_prefix_cache()
                     await self.engine.sleep(level=1)
-                    logger.info(f"Model {self.model_name} put to sleep after response (no active requests)")
+                    logger.info(f"Model {self.model_id} put to sleep after response (no active requests)")
                 except Exception as e:
-                    logger.error(f"Failed to put model {self.model_name} to sleep after response: {str(e)}")
+                    logger.error(f"Failed to put model {self.model_id} to sleep after response: {str(e)}")
 
     def _format_messages_to_prompt(self, messages: list[ChatMessage]) -> str:
         """Convert chat messages to a prompt string"""
@@ -176,13 +176,13 @@ class ModelManager:
         # Increment active requests counter
         async with self.request_lock:
             self.active_requests += 1
-            logger.info(f"New request started. Active requests for {self.model_name}: {self.active_requests}")
+            logger.info(f"New request started. Active requests for {self.model_id}: {self.active_requests}")
         
         try:
             # Check if model is in sleep mode before waking up
             if await self.engine.is_sleeping():
                 await self.engine.wake_up()
-                logger.info(f"Model {self.model_name} woke up from sleep")
+                logger.info(f"Model {self.model_id} woke up from sleep")
             else:
                 # Model is already awake, no need to wake up
                 pass
@@ -211,7 +211,7 @@ class ModelManager:
                                 "id": f"chatcmpl-{request_id}",
                                 "object": "chat.completion.chunk",
                                 "created": int(time.time()),
-                                "model": self.model_name,
+                                "model": self.model_id,
                                 "choices": [
                                     {
                                         "index": 0,
@@ -231,7 +231,7 @@ class ModelManager:
                             "id": f"chatcmpl-{request_id}",
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
-                            "model": self.model_name,
+                            "model": self.model_id,
                             "choices": [
                                 {
                                     "index": 0,
@@ -250,7 +250,7 @@ class ModelManager:
             # Ensure we decrement the counter even if there's an error during streaming
             async with self.request_lock:
                 self.active_requests -= 1
-                logger.error(f"Error during chat streaming for {self.model_name}: {str(e)}")
+                logger.error(f"Error during chat streaming for {self.model_id}: {str(e)}")
             raise
 
 # FastAPI application
@@ -260,7 +260,7 @@ api = FastAPI(
     version="1.0.0"
 )
  
-@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0},user_config={"models": [{"model_path": "Qwen/Qwen2.5-0.5B-Instruct"}]})
+@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0},user_config={"models": [{"model_source": "Qwen/Qwen2.5-0.5B-Instruct"}]})
 @serve.ingress(api)
 class LLMServingAPI:
     """Main API class for serving multiple LLM models"""
@@ -292,37 +292,37 @@ class LLMServingAPI:
         logger.error(f"Timeout waiting for model switch from {self.current_active_model} to {requested_model} after {max_wait_time} seconds")
         return False
     
-    async def decrement_consumer_count(self, model_name: str):
+    async def decrement_consumer_count(self, model_id: str):
         """Decrement the consumer count for a specific model"""
         async with self.consumer_lock:
-            if model_name in self.active_consumers:
-                self.active_consumers[model_name] -= 1
-                logger.info(f"Decremented consumer count for {model_name}: {self.active_consumers[model_name]}")
+            if model_id in self.active_consumers:
+                self.active_consumers[model_id] -= 1
+                logger.info(f"Decremented consumer count for {model_id}: {self.active_consumers[model_id]}")
                 
                 # If no more active consumers, we could optionally clean up resources
-                if self.active_consumers[model_name] <= 0:
-                    self.active_consumers[model_name] = 0
-                    logger.info(f"No more active consumers for {model_name}")
+                if self.active_consumers[model_id] <= 0:
+                    self.active_consumers[model_id] = 0
+                    logger.info(f"No more active consumers for {model_id}")
                     self.current_active_model = None
             else:
-                logger.warning(f"Attempted to decrement consumer count for unknown model: {model_name}")
+                logger.warning(f"Attempted to decrement consumer count for unknown model: {model_id}")
     
     async def reconfigure(self, user_config: dict[str, Any]):
         # Get models from user_config
         self.models = ModelConfig.get_models_from_user_config(user_config)
         
         # Create model managers for each model
-        for model_name, model_path in self.models.items():
+        for model_id, model_source in self.models.items():
             try:
                 # Check if ModelManager for this model is already initialized
-                if model_name in self.model_managers:
-                    logger.info(f"Model {model_name} already initialized, skipping initialization")
+                if model_id in self.model_managers:
+                    logger.info(f"Model {model_id} already initialized, skipping initialization")
                     continue
                 
-                self.model_managers[model_name] = await ModelManager.start(model_name, model_path)
-                logger.info(f"Successfully initialized model: {model_name} -> {model_path}")
+                self.model_managers[model_id] = await ModelManager.start(model_id, model_source)
+                logger.info(f"Successfully initialized model: {model_id} -> {model_source}")
             except Exception as e:
-                logger.error(f"Failed to initialize model {model_name} ({model_path}): {str(e)}")
+                logger.error(f"Failed to initialize model {model_id} ({model_source}): {str(e)}")
                 raise
 
         logger.info(f"LLM Serving API initialized with models: {list(self.model_managers.keys())}")
@@ -331,9 +331,9 @@ class LLMServingAPI:
     async def list_openai_models(self) -> dict[str, Any]:
         """OpenAI-compatible models list endpoint"""
         models_list = []
-        for model_name in self.models.keys():
+        for model_id in self.models.keys():
             models_list.append({
-                "id": model_name,
+                "id": model_id,
                 "object": "model",
                 "created": int(time.time()),
                 "owned_by": "vllm"

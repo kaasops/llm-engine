@@ -5,7 +5,6 @@ from vllm import LLM, SamplingParams
 import logging
 from typing import Optional, Dict, Any
 import time
-import os
 import asyncio
 from s3_model_loader import S3ModelLoader
 from vllm.engine.arg_utils import AsyncEngineArgs
@@ -261,10 +260,7 @@ api = FastAPI(
     version="1.0.0"
 )
  
-@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0},user_config={
-    "models": [
-        {"model_name": "Qwen/Qwen2.5-0.5B-Instruct","model_path": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775/"},
-        {"model_name": "Qwen/Qwen2.5-7B-Instruct","model_path": "/home/ray/.cache/huggingface/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/a09a35458c702b33eeacc393d103063234e8bc28/"}]})
+@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0},user_config={"models": [{"model_path": "Qwen/Qwen2.5-0.5B-Instruct"}]})
 @serve.ingress(api)
 class LLMServingAPI:
     """Main API class for serving multiple LLM models"""

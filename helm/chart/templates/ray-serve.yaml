@@ -51,6 +51,8 @@ spec:
         route_prefix: /
         runtime_env:
           working_dir: {{ .Values.working_dir }}
+          pip:
+            - runai-model-streamer==0.15.0
           env_vars:
             VLLM_USE_V1: "1"
             HF_TOKEN: {{ .Values.hf_token | quote }}

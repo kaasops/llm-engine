@@ -124,5 +124,5 @@ pip install -r requirements.txt
 3. Run serve
 
 ```bash
-serve run --address ray://127.0.0.1:10001 --runtime-env-json='{"env_vars": {"VLLM_USE_V1": "1"}, "working_dir": "./"}' engine:app
+serve run --address ray://127.0.0.1:10001 --runtime-env-json='{"env_vars": {"VLLM_USE_V1": "1"}, "pip":["runai-model-streamer"], "working_dir": "./"}' engine:app
 ```

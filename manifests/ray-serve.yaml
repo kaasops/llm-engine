@@ -77,11 +77,14 @@ spec:
         runtime_env:
           working_dir: "https://github.com/kaasops/llm-engine/archive/refs/heads/master.zip"
           env_vars:
-            MODELS: "Qwen/Qwen2.5-7B-Instruct,unsloth/Meta-Llama-3.1-8B-Instruct"
             VLLM_USE_V1: "1"
             HF_TOKEN: ""
         deployments:
           - name: LLMServingAPI
+            user_config:
+              models:
+                - model_id: Qwen2.5-7B-Instruct
+                  model_source: Qwen/Qwen2.5-7B-Instruct
             ray_actor_options:
               num_cpus: 4.0
               num_gpus: 1.0

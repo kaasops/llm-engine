@@ -113,6 +113,16 @@ pip install -r requirements.txt
 
 To run the LLM Engine on a remote Ray cluster for development:
 
+1. Create virtualenv
+
+2. Install requirements:
+
 ```bash
-serve run --address ray://127.0.0.1:10001 --runtime-env-json='{"env_vars": {"MODELS": "Qwen/Qwen2.5-7B-Instruct"}, "working_dir": "./"}' engine:app
+pip install -r requirements.txt
+```
+
+3. Run serve
+
+```bash
+serve run --address ray://127.0.0.1:10001 --runtime-env-json='{"env_vars": {"VLLM_USE_V1": "1"}, "working_dir": "./"}' engine:app
 ```

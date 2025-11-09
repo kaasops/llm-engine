@@ -126,7 +126,7 @@ class ModelManager:
                 model=actual_model_path,
                 enforce_eager=True,
                 enable_sleep_mode=True,
-                load_format="runai_streamer"
+                # load_format="runai_streamer"
             )
             self.engine = AsyncLLM.from_engine_args(engine_args)
             self.sampling_params = SamplingParams(**ModelConfig.DEFAULT_SAMPLING_PARAMS)

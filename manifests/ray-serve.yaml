@@ -29,7 +29,7 @@ spec:
         spec:
           containers:
           - name: ray-head
-            image: rayproject/ray-llm:2.49.2-py311-cu128
+            image: rayproject/ray-llm:2.51.1-py311-cu128
             ports:
             - containerPort: 6379
               name: gcs

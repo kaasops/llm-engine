@@ -2,7 +2,7 @@ kuberay-operator:
  enabled: false
 
 name: llm-engine
-rayVersion: 2.49.2
+rayVersion: 2.51.1
 image: "rayproject/ray-llm:{{ .Values.rayVersion }}-py311-cu128"
 models:
   - model_id: Qwen2.5-7B-Instruct

@@ -14,6 +14,7 @@ from vllm.utils import random_uuid
 from starlette.responses import StreamingResponse
 from typing import TYPE_CHECKING, AsyncGenerator
 import json
+from transformers import AutoTokenizer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -101,6 +102,8 @@ class ModelManager:
         self.active_requests = 0
         self.sleep_lock = asyncio.Lock()
         self.request_lock = asyncio.Lock()
+        self.tokenizer = None
+        self.has_chat_template = False
         
     @classmethod
     async def start(cls, model_id: str, model_source: str):
@@ -130,6 +133,19 @@ class ModelManager:
             )
             self.engine = AsyncLLM.from_engine_args(engine_args)
             self.sampling_params = SamplingParams(**ModelConfig.DEFAULT_SAMPLING_PARAMS)
+            
+            # Load tokenizer for chat template support
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(actual_model_path)
+                self.has_chat_template = hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None
+                if self.has_chat_template:
+                    logger.info(f"Model {self.model_id} has chat template support")
+                else:
+                    logger.info(f"Model {self.model_id} does not have a chat template, will use fallback formatting")
+            except Exception as e:
+                logger.warning(f"Failed to load tokenizer for chat template: {str(e)}. Will use fallback formatting.")
+                self.has_chat_template = False
+            
             await self.engine.reset_prefix_cache()
             await self.engine.sleep(level=1)
             logger.info(f"Model {self.model_source} initialized successfully")
@@ -159,7 +175,23 @@ class ModelManager:
                     logger.error(f"Failed to put model {self.model_id} to sleep after response: {str(e)}")
 
     def _format_messages_to_prompt(self, messages: list[ChatMessage]) -> str:
-        """Convert chat messages to a prompt string"""
+        """Convert chat messages to a prompt string using model's chat template if available"""
+        # Convert ChatMessage objects to dictionaries for the tokenizer
+        message_dicts = [{"role": msg.role, "content": msg.content} for msg in messages]
+        
+        # Try to use the model's chat template if available
+        if self.has_chat_template and self.tokenizer:
+            try:
+                prompt = self.tokenizer.apply_chat_template(
+                    message_dicts,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+                return prompt
+            except Exception as e:
+                logger.warning(f"Failed to apply chat template for {self.model_id}: {str(e)}. Using fallback formatting.")
+        
+        # Fallback to simple string formatting if chat template is not available or fails
         prompt = ""
         for message in messages:
             if message.role == "system":
@@ -261,7 +293,7 @@ api = FastAPI(
     version="1.0.0"
 )
  
-@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0},user_config={"models": [{"model_source": "Qwen/Qwen2.5-0.5B-Instruct"}]})
+@serve.deployment(ray_actor_options={"num_cpus": 1.0, "num_gpus": 1.0},user_config={"models": [{"model_source": "openai/gpt-oss-20b"}]})
 @serve.ingress(api)
 class LLMServingAPI:
     """Main API class for serving multiple LLM models"""

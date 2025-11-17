@@ -4,3 +4,5 @@ fastapi==0.115.12
 ray[serve]==2.51.1
 pydantic==2.11.7
 boto3==1.34.0
+openai-harmony==0.0.8
+transformers>=4.21.0
